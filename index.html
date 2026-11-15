@@ -513,6 +513,22 @@ document.addEventListener('keydown',function(e){
 document.addEventListener('click',function(e){var i=e.target;if(i.tagName==='INPUT'&&i.type==='date'&&i.showPicker){try{i.showPicker();}catch(err){}}});
 
 load();render();
+// Offline readiness is shown only after the worker is active and controls this page.
+var offlineNotice=document.createElement('div');
+offlineNotice.id='offlineNotice';offlineNotice.className='note';
+offlineNotice.setAttribute('role','status');
+document.querySelector('header').insertAdjacentElement('afterend',offlineNotice);
+function offlineStatus(message){offlineNotice.textContent=message;}
+if(typeof navigator!=='undefined'&&'serviceWorker' in navigator&&location.protocol!=='file:'){
+ offlineStatus('オフライン利用の準備中…');
+ function showConnection(){offlineStatus(navigator.onLine?'オフライン準備完了・Notion未連携':'オフラインで利用中・記録はこの端末に保存');}
+ navigator.serviceWorker.addEventListener('controllerchange',showConnection);
+ navigator.serviceWorker.register('./sw.js',{scope:'./',updateViaCache:'none'}).then(function(){
+  return navigator.serviceWorker.ready;
+ }).then(function(){if(navigator.serviceWorker.controller)showConnection();}).catch(function(){offlineStatus('オフライン準備ができませんでした。通信中に開き直してください。');});
+ window.addEventListener('online',function(){if(navigator.serviceWorker.controller)showConnection();});
+ window.addEventListener('offline',function(){if(navigator.serviceWorker.controller)showConnection();});
+}else{offlineStatus('オフライン起動には公開URLをChromeで開いてください。');}
 window.__kakeibo={get state(){return state;},ACT:ACT,ui:ui,calendarTotals:calendarTotals};
 })();
 </script>
