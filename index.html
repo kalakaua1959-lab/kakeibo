@@ -373,8 +373,8 @@ function renderSettings(){
    '<button class="sm" data-act="hide" data-v="'+c.id+'">'+(c.hidden?'表示する':'非表示')+'</button>'+(catUsed(c.id)?'':'<button class="sm" style="color:var(--err)" data-act="delcat" data-v="'+c.id+'">削除</button>')+'</div></div>';
  });
  h+='<button class="btn" style="width:100%" data-act="addcat">＋ カテゴリーを追加</button>';
- h+='<h2>Notion連携</h2><div class="kv"><span>状態</span><span>未設定（第2段階で設定）</span></div><div class="kv"><span>未送信の記録</span><span id="pending">'+pendingCount()+'件</span></div><div class="note" style="padding:6px 0">記録ごとに「未送信・送信済み・エラー」の状態を持たせる仕組みだけを先に組み込んでいます。試作では実際の送信は行いません。</div>';
- h+='<h2>データ</h2><div class="kv"><span>保存場所</span><span>この端末のブラウザ内のみ</span></div><div class="kv"><span>記録件数</span><span>'+live().length+'件'+(state.sampleMode?'（架空）':'')+'</span></div>';
+ h+=syncSettings();
+ h+='<h2>データ</h2><div class="kv"><span>保存場所</span><span>この端末＋連携後の記録はNotion</span></div><div class="kv"><span>記録件数</span><span>'+live().length+'件'+(state.sampleMode?'（架空）':'')+'</span></div>';
  h+='<div class="grid2" style="margin-top:10px"><button class="btn" data-act="export">バックアップを保存</button><button class="btn" data-act="import">バックアップから復元</button><button class="btn" data-act="resetSample">架空データに戻す</button><button class="btn red" data-act="wipe">記録をすべて消す</button></div><input type="file" id="importFile" accept="application/json,.json" style="display:none">';
  h+='<div class="note" style="padding:12px 0 0">試作版です。ブラウザの「サイトデータを削除」や機種変更で記録は消えます。本番では送信済みの記録をNotionから復元できる設計にします。</div></div>';
  main.innerHTML=h;
@@ -395,7 +395,7 @@ function renderSheet(){
   h+='<div class="cats">'+cats.map(function(c){return catTile(c,c.id===ed.catId,'edPick');}).join('')+'</div>';
  }
  h+='<div class="row"><div class="lbl">メモ</div><input class="memo" data-in="edMemo" type="text" maxlength="60" placeholder="任意" value="'+esc(ed.memo)+'"></div>';
- h+='<div class="syncinfo"><span class="dot"></span>Notion送信状態：'+({pending:'未送信',sent:'送信済み',error:'エラー'}[r.sync]||'未送信')+'（試作では送信しません）</div>';
+ h+='<div class="syncinfo"><span class="dot"></span>Notion送信状態：'+({pending:'未送信',sent:'送信済み',error:'エラー'}[r.sync]||'未送信')+'</div>';
  if(ed.err)h+='<div class="hint" style="padding:4px 16px">'+esc(ed.err)+'</div>';
  h+='<div class="acts"><button class="btn red" data-act="edDel">'+(ed.confirmDel?'もう一度押すと削除':'削除')+'</button><button class="btn" data-act="edClose">閉じる</button><button class="btn pri" data-act="edSave">保存</button></div></div></div>';
  sheetEl.innerHTML=h;
@@ -432,7 +432,7 @@ var ACT={
   var t=nowIso(),r={id:uid(),type:'expense',date:ui.date,categoryId:ui.catId,amount:a,memo:ui.memo.trim(),createdAt:t,updatedAt:t,deleted:false,sync:'pending'};
   state.records.push(r);persist();
   var c=catById(ui.catId);ui.amt='';ui.memo='';ui.memoOpen=false;ui.catId=null;render();
-  toast(fmtDay(r.date)+' '+c.name+' '+yen(a)+' を保存しました',{label:'取り消す',fn:function(){state.records=state.records.filter(function(x){return x.id!==r.id;});persist();render();toast('取り消しました');}});
+  toast(fmtDay(r.date)+' '+c.name+' '+yen(a)+' を保存しました',{label:'取り消す',fn:function(){r.deleted=true;touch(r);persist();render();toast('取り消しました');}});
  },
  incM:function(v){setIncMonth(addMonth(ui.incMonth,Number(v)));render();},
  ishift:function(v){var n=shiftDay(ui.incDate,Number(v));if(n.slice(0,7)===ui.incMonth){ui.incDate=n;render();}},
@@ -512,6 +512,55 @@ document.addEventListener('keydown',function(e){
 });
 document.addEventListener('click',function(e){var i=e.target;if(i.tagName==='INPUT'&&i.type==='date'&&i.showPicker){try{i.showPicker();}catch(err){}}});
 
+/* Single-device trial: explicit opt-in; old records never automatically enrolled. */
+var connectionKey='',syncBusy=false,syncTimer=null,syncMessage='未設定';
+function syncSettings(){return '<h2>Notion連携（テスト用）</h2><p class="note">開始後に新しく保存した記録だけを自動送信します。まず架空の金額で試してください。以前の記録とサンプルは送りません。この端末1台で利用してください。</p><input id="connectionKey" type="password" autocomplete="off" placeholder="64文字の接続キー" maxlength="64" class="memo"><p><button class="btn pri" data-act="connectNotion">接続して自動送信を開始</button> <button class="btn" data-act="disconnectNotion">停止</button></p><p class="note">キーはこのブラウザに保存します。NotionのAPIトークンは入力しません。停止するとキーを消します。</p><p id="syncStatus" role="status">'+esc(syncMessage)+'</p><button class="btn" data-act="retryNotion">送信状態を再確認</button>';}
+function showSync(message){syncMessage=message;var el=document.getElementById('syncStatus');if(el)el.textContent=message;}
+function saveSyncState(){try{localStorage.setItem(KEY,JSON.stringify(state));return true;}catch{showSync('端末へ保存できないため、送信を止めました。');return false;}}
+function queueSync(){clearTimeout(syncTimer);syncTimer=setTimeout(runSync,1200);}
+async function relayRequest(path,body){
+ var response=await fetch('https://kakeibo-relay.kalakaua1959.workers.dev'+path,{method:'POST',headers:{Authorization:'Bearer '+connectionKey,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(30000)});
+ var data=await response.json();if(!response.ok||!data.ok)throw new Error(data.message||'送信結果を確認できません。');return data;
+}
+async function runSync(){
+ if(!connectionKey||syncBusy||navigator.onLine===false)return;
+ if(!navigator.locks){showSync('Chromeで開いてください。');return;}
+ syncBusy=true;
+ try{await navigator.locks.request('kakeibo-notion-send',{ifAvailable:true},async function(lock){
+  if(!lock)return;
+  var waiting=state.records.filter(function(r){return r.syncEnabled&&!r.sample&&r.sync==='pending';});
+  for(var record of waiting){
+   if(!connectionKey||navigator.onLine===false)break;
+   var snapshot=JSON.parse(JSON.stringify(record)),uncertain=!!record.syncUncertain;
+   record.syncUncertain=true;if(!saveSyncState())break;
+   showSync('Notionへ送信中…');
+   try{
+    await relayRequest('/sync',{id:snapshot.id,type:snapshot.type,date:snapshot.date,amount:snapshot.amount,category:snapshot.type==='income'?'給料':catById(snapshot.categoryId).name,memo:snapshot.memo||'',deleted:!!snapshot.deleted,updatedAt:snapshot.updatedAt,reconcileOnly:uncertain});
+    record.syncUncertain=false;
+    if(record.updatedAt===snapshot.updatedAt&&record.deleted===snapshot.deleted)record.sync='sent';
+    saveSyncState();showSync('Notionへ保存しました');
+   }catch(e){record.sync='error';saveSyncState();showSync(e.message);break;}
+  }
+ });}finally{syncBusy=false;if(state.records.some(function(r){return r.syncEnabled&&r.sync==='pending';})&&connectionKey&&navigator.onLine!==false)queueSync();}
+}
+ACT.connectNotion=async function(){
+ var input=document.getElementById('connectionKey'),key=input.value.trim();input.value='';
+ if(!/^[a-f0-9]{64}$/.test(key)){showSync('64文字の接続キーを入力してください。');return;}
+ connectionKey=key;showSync('接続を確認中…');
+ try{var check=await relayRequest('/check');if(check.syncVersion!==1)throw new Error('Cloudflareのプログラムを最新版に差し替えてください。');localStorage.setItem('kakeibo-sync-key',key);showSync('接続済み。これから保存する記録を自動送信します。');queueSync();}catch(e){connectionKey='';localStorage.removeItem('kakeibo-sync-key');showSync(e.message);}
+};
+ACT.disconnectNotion=function(){connectionKey='';localStorage.removeItem('kakeibo-sync-key');showSync('停止しました。記録は端末に保存されます。');};
+ACT.retryNotion=function(){state.records.forEach(function(r){if(r.syncEnabled&&r.sync==='error')r.sync='pending';});saveSyncState();queueSync();showSync('送信状態を確認します。');};
+['saveExp','saveInc'].forEach(function(name){var previous=ACT[name];ACT[name]=function(){var before=new Set(state.records.map(function(r){return r.id;}));previous.apply(this,arguments);if(connectionKey){state.records.forEach(function(r){if(!before.has(r.id)&&!r.sample)r.syncEnabled=true;});saveSyncState();queueSync();}};});
+var originalPersist=persist;persist=function(){originalPersist();if(connectionKey)queueSync();};
+var originalWipe=ACT.wipe,originalReset=ACT.resetSample,originalImport=ACT.import;
+function hasLinkedRecords(){return state.records.some(function(r){return r.syncEnabled;});}
+[['wipe',originalWipe],['resetSample',originalReset],['import',originalImport]].forEach(function(pair){ACT[pair[0]]=function(){if(hasLinkedRecords()){toast('連携中の記録があります。全消去・復元はまだ利用できません。');return;}pair[1]();};});
+window.addEventListener('online',queueSync);
+document.addEventListener('visibilitychange',function(){if(!document.hidden)queueSync();});
+try{connectionKey=localStorage.getItem('kakeibo-sync-key')||'';if(connectionKey)syncMessage='接続済み。新しい記録を自動送信します。';}catch{}
+queueSync();
+
 load();render();
 // Offline readiness is shown only after the worker is active and controls this page.
 var offlineNotice=document.createElement('div');
@@ -521,7 +570,7 @@ document.querySelector('header').insertAdjacentElement('afterend',offlineNotice)
 function offlineStatus(message){offlineNotice.textContent=message;}
 if(typeof navigator!=='undefined'&&'serviceWorker' in navigator&&location.protocol!=='file:'){
  offlineStatus('オフライン利用の準備中…');
- function showConnection(){offlineStatus(navigator.onLine?'オフライン準備完了・Notion未連携':'オフラインで利用中・記録はこの端末に保存');}
+ function showConnection(){offlineStatus(navigator.onLine?'オフライン準備完了':'オフラインで利用中・記録はこの端末に保存');}
  navigator.serviceWorker.addEventListener('controllerchange',showConnection);
  navigator.serviceWorker.register('./sw.js',{scope:'./',updateViaCache:'none'}).then(function(){
   return navigator.serviceWorker.ready;

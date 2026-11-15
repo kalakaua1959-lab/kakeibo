@@ -1,6 +1,6 @@
 'use strict';
 const PREFIX='kakeibo-shell-';
-const CACHE=PREFIX+'20261115-1';
+const CACHE=PREFIX+'20261115-2';
 const HOME=new URL('./index.html',self.registration.scope).href;
 self.addEventListener('install',event=>{
  event.waitUntil((async()=>{
